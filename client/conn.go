@@ -25,7 +25,6 @@ type mqttConn struct {
 
 	//session management
 	session *mqtt.Session
-	rwl     sync.RWMutex //protect sesssion
 
 	//keepalive
 	deadline time.Duration
@@ -277,6 +276,14 @@ func (c *mqttConn) handleUnsuback(pid uint16) {
 // Disconnect tell server to close connection.
 func (c *mqttConn) Disconnect() {
 	c.writech <- &packet.DisconnectPacket{}
-	time.Sleep(1e8)
+	time.Sleep(1e6)
 	c.closeConn("disconnect", true)
+}
+
+// IsDead reports the connection is closed or not
+func (c *mqttConn) IsDead() bool {
+	c.deadl.Lock()
+	b := c.dead
+	c.deadl.Unlock()
+	return b
 }
