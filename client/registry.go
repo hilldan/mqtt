@@ -10,9 +10,6 @@ var (
 		subs:   make(map[uint16][]packet.TopicFilter),
 		unsubs: make(map[uint16][]packet.String),
 	}
-	PacketIdRegistry = &packetIdRegistry{
-		pids: make(map[uint16]packet.Bit4),
-	}
 )
 
 type topicFilterRegistry struct {
@@ -52,35 +49,4 @@ func (r *topicFilterRegistry) RemoveUnsubs(pid uint16) {
 	r.Lock()
 	delete(r.unsubs, pid)
 	r.Unlock()
-}
-
-type packetIdRegistry struct {
-	sync.RWMutex
-	pids map[uint16]packet.Bit4 //latest packetId->control type
-}
-
-func (pr *packetIdRegistry) Add(pid packet.Integer, ctype packet.Bit4) {
-	pr.Lock()
-	pr.pids[uint16(pid)] = ctype
-	pr.Unlock()
-}
-func (pr *packetIdRegistry) Get(pid packet.Integer) (ctype packet.Bit4, ok bool) {
-	pr.RLock()
-	ctype, ok = pr.pids[uint16(pid)]
-	pr.RUnlock()
-	return
-}
-func (pr *packetIdRegistry) Remove(pid packet.Integer) {
-	pr.Lock()
-	delete(pr.pids, uint16(pid))
-	pr.Unlock()
-}
-
-// Ignore compare packetId and packet type to decide if client igore the packet with pid.
-func (pr *packetIdRegistry) Ignore(pid packet.Integer, ctype packet.Bit4) bool {
-	pr.Lock()
-	defer pr.Unlock()
-	old, ok := pr.pids[uint16(pid)]
-	pr.pids[uint16(pid)] = ctype
-	return ok && old == ctype
 }

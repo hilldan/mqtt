@@ -30,15 +30,15 @@ func main() {
 		WillQoS:      0,
 		WillFlag:     false,
 		CleanSession: false,
-		KeepAlive:    5,
+		KeepAlive:    10,
 		ClientId:     packet.String(*cid),
 		WillTopic:    "",
 		WillMessage:  "",
 		UserName:     "xxx",
 		Password:     "yyy",
 	}
-	handler := func(msg string) {
-		fmt.Println(msg)
+	handler := func(p packet.PublishPacket) {
+		fmt.Println(p.Qos, p.Dup, p.ApplicationMessage)
 	}
 	cnn, err := client.RunMQTT(c, persister, cnnPacket, handler)
 	if err != nil {

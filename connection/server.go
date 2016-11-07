@@ -53,7 +53,7 @@ func (s *TlsServer) Run(handler ServeConn) {
 
 	ln, err := tls.Listen("tcp", s.Addr, s.Config)
 	if err != nil {
-		ln, err = net.Listen("tcp6", s.Addr)
+		ln, err = tls.Listen("tcp6", s.Addr, s.Config)
 	}
 	if err != nil {
 		log.Fatal(err)

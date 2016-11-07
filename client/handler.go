@@ -16,7 +16,7 @@ var (
 	persister     mqtt.Persister
 	ClientId      string
 	PacketId      uint32 //convert into packet.Integer
-	handleMessage func(msg string)
+	handleMessage func(p packet.PublishPacket)
 )
 
 func SetPersister(p mqtt.Persister) {
@@ -33,7 +33,8 @@ func SetPersister(p mqtt.Persister) {
 // Subscribe to request Application Messages that it is interested in receiving.
 // Unsubscribe to remove a request for Application Messages.
 // Disconnect from the Server.
-func RunMQTT(client connection.Clienter, persist mqtt.Persister, p *packet.ConnectPacket, handler func(msg string)) (cnn *mqttConn, err error) {
+func RunMQTT(client connection.Clienter, persist mqtt.Persister, p *packet.ConnectPacket,
+	handler func(p packet.PublishPacket)) (cnn *mqttConn, err error) {
 	conn, err := client.Dial()
 	if err != nil {
 		return
@@ -49,17 +50,14 @@ func RunMQTT(client connection.Clienter, persist mqtt.Persister, p *packet.Conne
 		readch:   make(chan mqtt.PacketReaded, N),
 		writech:  make(chan packet.ControlPacketer, N),
 		exitch:   make(chan struct{}),
-		puback:   make(map[uint16]chan struct{}),
 		pingch:   make(chan struct{}, N),
 		deadline: time.Second * time.Duration(p.KeepAlive),
 	}
 	go cnn.write()
 	go cnn.read()
 
-	old := cnn.initSession()
-	p.CleanSession = packet.Bool(!old)
 	cnn.writech <- p
-	err = cnn.initConn()
+	err = cnn.initConn(bool(p.CleanSession))
 	if err != nil {
 		return
 	}
@@ -100,28 +98,24 @@ func handlePacket(p packet.ControlPacketer, c *mqttConn) {
 		case packet.QoS2:
 			c.writech <- &packet.PubrecPacket{PacketId: pk.PacketId}
 		}
-		// ignore any publish packet that has been handled from server
-		if pk.Qos != packet.QoS0 && PacketIdRegistry.Ignore(pk.PacketId, packet.TypePUBLISH) {
-			return
-		}
-		//do something
-		handleMessage(string(pk.ApplicationMessage))
+		handleMessage(*pk)
 
 	case packet.TypePUBACK:
 		pk := p.(*packet.PubackPacket)
-		c.closeTikerch(pk.PacketId)
+		c.session.RemovePubOut(pk.PacketId)
 
 	case packet.TypePUBREC:
 		pk := p.(*packet.PubrecPacket)
 		c.writech <- &packet.PubrelPacket{PacketId: pk.PacketId}
+		c.session.RemovePubOut(pk.PacketId)
 
 	case packet.TypePUBREL:
 		pk := p.(*packet.PubrelPacket)
 		c.writech <- &packet.PubcompPacket{PacketId: pk.PacketId}
 
 	case packet.TypePUBCOMP:
-		pk := p.(*packet.PubcompPacket)
-		c.closeTikerch(pk.PacketId)
+		// do nothing
+		// pk := p.(*packet.PubcompPacket)
 
 	// case packet.TypeSUBSCRIBE:
 	case packet.TypeSUBACK:

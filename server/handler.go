@@ -44,7 +44,6 @@ func handler(cnn net.Conn) {
 		readch:  make(chan mqtt.PacketReaded, N),
 		writech: make(chan packet.ControlPacketer, N),
 		exitch:  make(chan struct{}),
-		puback:  make(map[uint16]chan struct{}),
 		pingch:  make(chan struct{}, N),
 	}
 	go c.read()
@@ -107,12 +106,10 @@ func handlePacket(p packet.ControlPacketer, c *mqttConn, pc *packet.ConnectPacke
 		}
 
 		// don't ignore any packet from client
-		// if PacketIdRegistry.Ignore(c.clientId, pk.PacketId) {
-		// 	return
-		// }
 
 		//save and distribute
 		pk.PacketId = packet.Integer(atomic.AddUint32(&packetId, 1))
+		pk.Dup = false
 		if pk.Retain {
 			RetainRegistry.Add(string(pk.TopicName), *pk)
 		}
@@ -120,19 +117,20 @@ func handlePacket(p packet.ControlPacketer, c *mqttConn, pc *packet.ConnectPacke
 
 	case packet.TypePUBACK:
 		pk := p.(*packet.PubackPacket)
-		c.closeTikerch(pk.PacketId)
+		c.session.RemovePubOut(pk.PacketId)
 
 	case packet.TypePUBREC:
 		pk := p.(*packet.PubrecPacket)
 		c.writech <- &packet.PubrelPacket{PacketId: pk.PacketId}
+		c.session.RemovePubOut(pk.PacketId)
 
 	case packet.TypePUBREL:
 		pk := p.(*packet.PubrelPacket)
 		c.writech <- &packet.PubcompPacket{PacketId: pk.PacketId}
 
 	case packet.TypePUBCOMP:
-		pk := p.(*packet.PubcompPacket)
-		c.closeTikerch(pk.PacketId)
+		// do nothing
+		// pk := p.(*packet.PubcompPacket)
 
 	case packet.TypeSUBSCRIBE:
 		pk := p.(*packet.SubscribePacket)

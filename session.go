@@ -36,6 +36,16 @@ func (s *Session) RemovePubOut(packetId packet.Integer) {
 	delete(s.PubOut, uint16(packetId))
 	s.Unlock()
 }
+func (s *Session) ResetPubOut() (old map[uint16]packet.PublishPacket) {
+	s.Lock()
+	defer s.Unlock()
+	if len(s.PubOut) == 0 {
+		return
+	}
+	old = s.PubOut
+	s.PubOut = make(map[uint16]packet.PublishPacket)
+	return
+}
 func (s *Session) SetSubscription(sub []packet.TopicFilter) {
 	s.Lock()
 	s.Subscript = sub

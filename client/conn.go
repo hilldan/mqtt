@@ -27,10 +27,6 @@ type mqttConn struct {
 	session *mqtt.Session
 	rwl     sync.RWMutex //protect sesssion
 
-	//publish status
-	puback  map[uint16]chan struct{} //packetId->chan to stop tiker
-	pubackl sync.RWMutex
-
 	//keepalive
 	deadline time.Duration
 	pingch   chan struct{}
@@ -93,14 +89,13 @@ func (c *mqttConn) closeConn(cause string, session bool) {
 	c.cnn.Close()
 	close(c.exitch)
 	close(c.pingch)
-	c.closeAllTikerch()
 	if session {
 		c.session.Save(KeySession, ClientId, persister)
 	}
 }
 
 //initConn wait for the first connect packet coming, handle it.
-func (c *mqttConn) initConn() error {
+func (c *mqttConn) initConn(clearSession bool) error {
 	select {
 	case <-time.After(10e9):
 		c.closeConn("waiting for connack packet timeout", false)
@@ -128,8 +123,11 @@ func (c *mqttConn) initConn() error {
 			return mqtt.ErrConnect
 		}
 		// log.Printf("server sp value %d", p.AckFlags&0x01)
-
+		if c.initSession() {
+			c.publishOld(clearSession)
+		}
 		go c.keepalive()
+		go c.republish()
 	}
 	return nil
 }
@@ -177,6 +175,8 @@ func (c *mqttConn) keepalive() {
 		tm1 = time.AfterFunc(c.deadline, f1)
 		tm2 = time.AfterFunc(timeResp, f2)
 	}
+	tm1.Stop()
+	tm2.Stop()
 	log.Printf("keepalive no leak")
 }
 
@@ -184,6 +184,7 @@ func (c *mqttConn) keepalive() {
 // It will block  for QOS>0 until acknowledged by server
 func (c *mqttConn) Publish(p packet.PublishPacket) {
 	p.PacketId = packet.Integer(atomic.AddUint32(&PacketId, 1))
+	p.Dup = false
 	c.writech <- &p
 	if p.Qos == packet.QoS0 {
 		return
@@ -191,21 +192,35 @@ func (c *mqttConn) Publish(p packet.PublishPacket) {
 
 	p.Dup = true
 	c.session.AddPubOut(p.PacketId, p)
+}
 
+// publishOld extract unacknowledged packets from session and resend them to the peer.
+func (c *mqttConn) publishOld(clearSession bool) {
+	old := c.session.ResetPubOut()
+	if clearSession {
+		persister.Delete(KeySession, ClientId)
+		c.session = mqtt.NewSession()
+	}
+	for _, v := range old {
+		c.Publish(v)
+	}
+}
+
+func (c *mqttConn) republish() {
 	tk := time.NewTicker(10e9)
-	ch := c.getTikerch(p.PacketId)
 	for {
 		select {
 		case <-tk.C:
-			c.writech <- &p
-		case <-ch:
+			for _, v := range c.session.PubOut {
+				c.writech <- &v
+			}
+		case <-c.exitch:
 			tk.Stop()
-			c.session.RemovePubOut(p.PacketId)
 			goto exit
 		}
 	}
 exit:
-	log.Printf("Publish %d no leak", p.PacketId)
+	log.Printf("republish no leak")
 }
 
 // Subscribe send topic filters to server. When a suback received from server,
@@ -262,35 +277,6 @@ func (c *mqttConn) handleUnsuback(pid uint16) {
 // Disconnect tell server to close connection.
 func (c *mqttConn) Disconnect() {
 	c.writech <- &packet.DisconnectPacket{}
+	time.Sleep(1e8)
 	c.closeConn("disconnect", true)
-}
-
-func (c *mqttConn) getTikerch(pid packet.Integer) (ch chan struct{}) {
-	c.pubackl.Lock()
-	defer c.pubackl.Unlock()
-	ch, ok := c.puback[uint16(pid)]
-	if ok {
-		return
-	}
-	ch = make(chan struct{})
-	c.puback[uint16(pid)] = ch
-	return
-}
-func (c *mqttConn) closeTikerch(pid packet.Integer) {
-	c.pubackl.Lock()
-	defer c.pubackl.Unlock()
-	ch, ok := c.puback[uint16(pid)]
-	if !ok {
-		return
-	}
-	close(ch)
-	delete(c.puback, uint16(pid))
-}
-func (c *mqttConn) closeAllTikerch() {
-	c.pubackl.Lock()
-	defer c.pubackl.Unlock()
-	for _, v := range c.puback {
-		close(v)
-	}
-	c.puback = make(map[uint16]chan struct{})
 }

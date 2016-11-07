@@ -21,9 +21,6 @@ var (
 	WildcardRegistry = &wildcardRegistry{
 		path: make(map[string][]string),
 	}
-	PacketIdRegistry = &packetIdRegistry{
-		pids: make(map[string]packet.Integer),
-	}
 )
 
 type connRegistry struct {
@@ -165,35 +162,4 @@ func (wr *wildcardRegistry) Remove(sub string) {
 	wr.Lock()
 	delete(wr.path, sub)
 	wr.Unlock()
-}
-
-type packetIdRegistry struct {
-	sync.RWMutex
-	pids map[string]packet.Integer //clientId->latest packetId
-}
-
-func (pr *packetIdRegistry) Add(clientId string, pid packet.Integer) {
-	pr.Lock()
-	pr.pids[clientId] = pid
-	pr.Unlock()
-}
-func (pr *packetIdRegistry) Get(clientId string) (pid packet.Integer, ok bool) {
-	pr.RLock()
-	pid, ok = pr.pids[clientId]
-	pr.RUnlock()
-	return
-}
-func (pr *packetIdRegistry) Remove(clientId string) {
-	pr.Lock()
-	delete(pr.pids, clientId)
-	pr.Unlock()
-}
-
-// Ignore compare packetIds to decide if server igore the packet with pid.
-func (pr *packetIdRegistry) Ignore(clientId string, pid packet.Integer) bool {
-	pr.Lock()
-	defer pr.Unlock()
-	old, ok := pr.pids[clientId]
-	pr.pids[clientId] = pid
-	return ok && old == pid
 }
