@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"hilldan/db/redis"
@@ -71,5 +72,6 @@ func main() {
 	// cnn.Unsubscribe(unsubs)
 
 	time.Sleep(30e9)
-	// fmt.Println(cnn.)
+
+	var ctx context.Context
 }

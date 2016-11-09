@@ -34,10 +34,30 @@ func (r *topicFilterRegistry) GetSubs(pid uint16) (tfs []packet.TopicFilter, ok 
 	r.RUnlock()
 	return
 }
+func (r *topicFilterRegistry) GetRemoveSubs(pid uint16) (tfs []packet.TopicFilter, ok bool) {
+	r.Lock()
+	defer r.Unlock()
+	tfs, ok = r.subs[pid]
+	if !ok {
+		return
+	}
+	delete(r.subs, pid)
+	return
+}
 func (r *topicFilterRegistry) GetUnsubs(pid uint16) (ts []packet.String, ok bool) {
 	r.RLock()
 	ts, ok = r.unsubs[pid]
 	r.RUnlock()
+	return
+}
+func (r *topicFilterRegistry) GetRemoveUnsubs(pid uint16) (ts []packet.String, ok bool) {
+	r.Lock()
+	defer r.Unlock()
+	ts, ok = r.unsubs[pid]
+	if !ok {
+		return
+	}
+	delete(r.unsubs, pid)
 	return
 }
 func (r *topicFilterRegistry) RemoveSubs(pid uint16) {

@@ -18,6 +18,7 @@ import (
 // It provides the means to send an ordered, lossless, stream of bytes in both directions.
 type mqttConn struct {
 	clientId string
+	packetId uint32 //unique, convert into uint16
 
 	//comunication between server and client
 	cnn     net.Conn
@@ -27,7 +28,6 @@ type mqttConn struct {
 
 	//session management
 	session *mqtt.Session
-	rwl     sync.RWMutex //protect sesssion
 
 	//keepalive
 	deadline time.Duration
@@ -94,6 +94,7 @@ func (c *mqttConn) closeConn(cause string, session bool) {
 	if session {
 		c.session.Save(KeySession, c.clientId, persister)
 	}
+	ConnRegistry.Remove(c.clientId)
 }
 
 //initConn wait for the first connect packet coming, handle it.
@@ -123,18 +124,19 @@ func (c *mqttConn) initConn() (p *packet.ConnectPacket) {
 		}
 
 		p = pr.P.(*packet.ConnectPacket)
-		if bool(p.UserNameFlag) && !authCheck(string(p.UserName), string(p.Password)) {
+		if bool(p.UserNameFlag) && authCheck != nil && !authCheck(string(p.UserName), string(p.Password)) {
 			ack.Code = packet.CodeConnackRefusedUnauthorized
 			ack.WriteTo(c.cnn)
 			c.closeConn("auth fail", false)
+			p = nil
 			return
 		}
+
 		c.clientId = string(p.ClientId)
 		c.deadline = time.Second * time.Duration(p.KeepAlive)
 
 		go c.write()
 		go c.keepalive()
-		go c.republish()
 
 		if c.initSession() {
 			c.publishOld(bool(p.CleanSession))
@@ -169,14 +171,17 @@ func (c *mqttConn) initSession() bool {
 		c.session = mqtt.NewSession()
 		return false
 	}
-
+	s.MustInit()
 	c.session = s
 	return true
 }
 
 // publish send packet from server to client
-// be careful that leakage accur after connection closed
 func (c *mqttConn) publish(p packet.PublishPacket) {
+	if p.Qos != packet.QoS0 {
+		p.PacketId = packet.Integer(atomic.AddUint32(&c.packetId, 1))
+	}
+	p.Dup = false
 	c.writech <- &p
 	if p.Qos == packet.QoS0 {
 		return
@@ -193,29 +198,33 @@ func (c *mqttConn) publishOld(clearSession bool) {
 		persister.Delete(KeySession, c.clientId)
 		c.session = mqtt.NewSession()
 	}
+	max := packet.Integer(0)
 	for _, v := range old {
-		v.PacketId = packet.Integer(atomic.AddUint32(&packetId, 1))
-		v.Dup = false
-		c.publish(v)
+		if v.PacketId > max {
+			max = v.PacketId
+		}
+		c.writech <- &v
+		c.session.AddPubOut(v.PacketId, v)
 	}
+	atomic.AddUint32(&c.packetId, uint32(max)+1) //keep unique
 }
 
-func (c *mqttConn) republish() {
-	tk := time.NewTicker(10e9)
-	for {
-		select {
-		case <-tk.C:
-			for _, v := range c.session.PubOut {
-				c.writech <- &v
-			}
-		case <-c.exitch:
-			tk.Stop()
-			goto exit
-		}
-	}
-exit:
-	log.Printf("republish no leak")
-}
+// func (c *mqttConn) republish() {
+// 	tk := time.NewTicker(10e9)
+// 	for {
+// 		select {
+// 		case <-tk.C:
+// 			for _, v := range c.session.PubOut {
+// 				c.writech <- &v
+// 			}
+// 		case <-c.exitch:
+// 			tk.Stop()
+// 			goto exit
+// 		}
+// 	}
+// exit:
+// 	log.Printf("republish no leak")
+// }
 
 func (c *mqttConn) subscribe(p packet.SubscribePacket) {
 	l := len(p.TopicFilters)

@@ -115,6 +115,7 @@ func (c *mqttConn) initConn(clearSession bool) error {
 
 		p := pr.P.(*packet.ConnackPacket)
 		if p.Code == packet.CodeConnackRefusedUnauthorized || p.Code == packet.CodeConnackRefusedUserPasswd {
+			c.closeConn("auth fail", false)
 			return mqtt.ErrAuth
 		}
 		if p.Code != packet.CodeConnackAccepted {
@@ -126,7 +127,6 @@ func (c *mqttConn) initConn(clearSession bool) error {
 			c.publishOld(clearSession)
 		}
 		go c.keepalive()
-		go c.republish()
 	}
 	return nil
 }
@@ -148,7 +148,7 @@ func (c *mqttConn) initSession() bool {
 		c.session = mqtt.NewSession()
 		return false
 	}
-
+	s.MustInit()
 	c.session = s
 	return true
 }
@@ -180,8 +180,10 @@ func (c *mqttConn) keepalive() {
 }
 
 // Publish send packet from client to server.
-// It will block  for QOS>0 until acknowledged by server
 func (c *mqttConn) Publish(p packet.PublishPacket) {
+	if c.IsDead() {
+		return
+	}
 	p.PacketId = packet.Integer(atomic.AddUint32(&PacketId, 1))
 	p.Dup = false
 	c.writech <- &p
@@ -200,31 +202,40 @@ func (c *mqttConn) publishOld(clearSession bool) {
 		persister.Delete(KeySession, ClientId)
 		c.session = mqtt.NewSession()
 	}
+	max := packet.Integer(0)
 	for _, v := range old {
-		c.Publish(v)
+		if v.PacketId > max {
+			max = v.PacketId
+		}
+		c.writech <- &v
+		c.session.AddPubOut(v.PacketId, v)
 	}
+	atomic.AddUint32(&PacketId, uint32(max)+1) //keep unique
 }
 
-func (c *mqttConn) republish() {
-	tk := time.NewTicker(10e9)
-	for {
-		select {
-		case <-tk.C:
-			for _, v := range c.session.PubOut {
-				c.writech <- &v
-			}
-		case <-c.exitch:
-			tk.Stop()
-			goto exit
-		}
-	}
-exit:
-	log.Printf("republish no leak")
-}
+// func (c *mqttConn) republish() {
+// 	tk := time.NewTicker(10e9)
+// 	for {
+// 		select {
+// 		case <-tk.C:
+// 			for _, v := range c.session.PubOut {
+// 				c.writech <- &v
+// 			}
+// 		case <-c.exitch:
+// 			tk.Stop()
+// 			goto exit
+// 		}
+// 	}
+// exit:
+// 	log.Printf("republish no leak")
+// }
 
 // Subscribe send topic filters to server. When a suback received from server,
 // the subject subscribed successfully will be saved at session.
 func (c *mqttConn) Subscribe(filters []packet.TopicFilter) {
+	if c.IsDead() {
+		return
+	}
 	p := &packet.SubscribePacket{
 		PacketId:     packet.Integer(atomic.AddUint32(&PacketId, 1)),
 		TopicFilters: filters,
@@ -234,7 +245,7 @@ func (c *mqttConn) Subscribe(filters []packet.TopicFilter) {
 }
 
 func (c *mqttConn) handleSuback(p *packet.SubackPacket) {
-	subs, ok := TopicFilterRegistry.GetSubs(uint16(p.PacketId))
+	subs, ok := TopicFilterRegistry.GetRemoveSubs(uint16(p.PacketId))
 	if !ok {
 		return
 	}
@@ -251,12 +262,14 @@ func (c *mqttConn) handleSuback(p *packet.SubackPacket) {
 		n++
 	}
 	c.session.AddSubscription(tem[:n])
-	TopicFilterRegistry.RemoveSubs(uint16(p.PacketId))
 }
 
 // Unsubscribe send command unsubscribe to server. When a unsuback received from server,
 // the subject unsubscribed successfully will be modified at session.
 func (c *mqttConn) Unsubscribe(ts []packet.String) {
+	if c.IsDead() {
+		return
+	}
 	p := &packet.UnsubscribePacket{
 		PacketId:    packet.Integer(atomic.AddUint32(&PacketId, 1)),
 		TopicFilter: ts,
@@ -265,16 +278,18 @@ func (c *mqttConn) Unsubscribe(ts []packet.String) {
 	c.writech <- p
 }
 func (c *mqttConn) handleUnsuback(pid uint16) {
-	unsbs, ok := TopicFilterRegistry.GetUnsubs(pid)
+	unsbs, ok := TopicFilterRegistry.GetRemoveUnsubs(pid)
 	if !ok {
 		return
 	}
 	c.session.Unsubscription(unsbs)
-	TopicFilterRegistry.RemoveUnsubs(pid)
 }
 
 // Disconnect tell server to close connection.
 func (c *mqttConn) Disconnect() {
+	if c.IsDead() {
+		return
+	}
 	c.writech <- &packet.DisconnectPacket{}
 	time.Sleep(1e6)
 	c.closeConn("disconnect", true)

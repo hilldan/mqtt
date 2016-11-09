@@ -6,13 +6,13 @@ import (
 	"hilldan/mqtt/packet"
 	"log"
 	"net"
-	"sync/atomic"
+	"time"
 )
 
 var (
-	persister mqtt.Persister
-	packetId  uint32 //unique, convert into uint16
-	authCheck func(user, passwd string) bool
+	persister     mqtt.Persister
+	authCheck     func(user, passwd string) bool
+	doWhenConnect func(p *packet.ConnectPacket) error
 )
 
 // TCP ports 8883 and 1883 are registered with IANA for MQTT TLS and non TLS communication
@@ -25,15 +25,39 @@ var (
 // Accepts Application Messages published by Clients.
 // Processes Subscribe and Unsubscribe requests from Clients.
 // Forwards Application Messages that match Client Subscriptions.
-func RunMQTT(server connection.Serverer, persist mqtt.Persister, auth func(user, passwd string) bool) {
+func RunMQTT(server connection.Serverer, persist mqtt.Persister) {
 	persister = persist
+	if persister == nil {
+		panic("persisiter is nil")
+	}
 	RetainRegistry = NewRetainRegistry()
-	authCheck = auth
 	server.Run(handler)
 }
 
+// SetPersister assign a persister to server.
 func SetPersister(p mqtt.Persister) {
 	persister = p
+}
+
+// SetAuthFunc assign a user authentication method to server that called
+// when the connection has been established
+func SetAuthFunc(f func(user, passwd string) bool) {
+	authCheck = f
+}
+
+// SetDoWhenConnect place a callback here that called after the connection establisded.
+// if the result error is not nil, connection will be closed
+func SetDoWhenConnect(f func(p *packet.ConnectPacket) error) {
+	doWhenConnect = f
+}
+
+// Publish send pub to the client specified by clientId.
+func Publish(pub packet.PublishPacket, clientId string) {
+	c, ok := ConnRegistry.Get(clientId)
+	if !ok {
+		return
+	}
+	c.publish(pub)
 }
 
 func handler(cnn net.Conn) {
@@ -51,6 +75,16 @@ func handler(cnn net.Conn) {
 	pc := c.initConn()
 	if pc == nil {
 		return
+	}
+
+	if doWhenConnect != nil {
+		go func() {
+			err := doWhenConnect(pc)
+			if err != nil {
+				time.Sleep(1e6)
+				c.closeConn(err.Error(), false)
+			}
+		}()
 	}
 	//handle all the packet
 	for pr := range c.readch {
@@ -103,13 +137,13 @@ func handlePacket(p packet.ControlPacketer, c *mqttConn, pc *packet.ConnectPacke
 			c.writech <- &packet.PubackPacket{PacketId: pk.PacketId}
 		case packet.QoS2:
 			c.writech <- &packet.PubrecPacket{PacketId: pk.PacketId}
+			if bool(pk.Dup) && c.session.GetPubIn(pk.PacketId) {
+				return
+			}
+			c.session.AddPubIn(pk.PacketId)
 		}
 
-		// don't ignore any packet from client
-
-		//save and distribute
-		pk.PacketId = packet.Integer(atomic.AddUint32(&packetId, 1))
-		pk.Dup = false
+		// save and distribute
 		if pk.Retain {
 			RetainRegistry.Add(string(pk.TopicName), *pk)
 		}
@@ -126,6 +160,7 @@ func handlePacket(p packet.ControlPacketer, c *mqttConn, pc *packet.ConnectPacke
 
 	case packet.TypePUBREL:
 		pk := p.(*packet.PubrelPacket)
+		c.session.RemovePubIn(pk.PacketId)
 		c.writech <- &packet.PubcompPacket{PacketId: pk.PacketId}
 
 	case packet.TypePUBCOMP:
@@ -134,7 +169,7 @@ func handlePacket(p packet.ControlPacketer, c *mqttConn, pc *packet.ConnectPacke
 
 	case packet.TypeSUBSCRIBE:
 		pk := p.(*packet.SubscribePacket)
-		go c.subscribe(*pk)
+		c.subscribe(*pk)
 
 	// case packet.TypeSUBACK:
 	case packet.TypeUNSUBSCRIBE:
@@ -150,6 +185,7 @@ func handlePacket(p packet.ControlPacketer, c *mqttConn, pc *packet.ConnectPacke
 	case packet.TypeDISCONNECT:
 		pc.WillFlag = false
 		c.closeConn("disconnect", true)
+
 	default:
 		c.closeConn("invalid packet", true)
 	}

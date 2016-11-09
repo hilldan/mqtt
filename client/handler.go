@@ -97,6 +97,10 @@ func handlePacket(p packet.ControlPacketer, c *mqttConn) {
 			c.writech <- &packet.PubackPacket{PacketId: pk.PacketId}
 		case packet.QoS2:
 			c.writech <- &packet.PubrecPacket{PacketId: pk.PacketId}
+			if bool(pk.Dup) && c.session.GetPubIn(pk.PacketId) {
+				return
+			}
+			c.session.AddPubIn(pk.PacketId)
 		}
 		handleMessage(*pk)
 
@@ -111,6 +115,7 @@ func handlePacket(p packet.ControlPacketer, c *mqttConn) {
 
 	case packet.TypePUBREL:
 		pk := p.(*packet.PubrelPacket)
+		c.session.RemovePubIn(pk.PacketId)
 		c.writech <- &packet.PubcompPacket{PacketId: pk.PacketId}
 
 	case packet.TypePUBCOMP:
