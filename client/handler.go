@@ -13,14 +13,18 @@ const (
 )
 
 var (
-	persister     mqtt.Persister
-	ClientId      string
-	PacketId      uint32 //convert into packet.Integer
-	handleMessage func(p packet.PublishPacket)
+	persister mqtt.Persister
+	ClientId  string
+	PacketId  uint32 //convert into packet.Integer
+	listener  mqtt.EventListener
 )
 
 func SetPersister(p mqtt.Persister) {
 	persister = p
+}
+
+func SetEventListener(l mqtt.EventListener) {
+	listener = l
 }
 
 // TCP ports 8883 and 1883 are registered with IANA for MQTT TLS and non TLS communication
@@ -33,18 +37,21 @@ func SetPersister(p mqtt.Persister) {
 // Subscribe to request Application Messages that it is interested in receiving.
 // Unsubscribe to remove a request for Application Messages.
 // Disconnect from the Server.
-func RunMQTT(client connection.Clienter, persist mqtt.Persister, p *packet.ConnectPacket,
-	handler func(p packet.PublishPacket)) (cnn *mqttConn, err error) {
+func RunMQTT(client connection.Clienter, persist mqtt.Persister, p *packet.ConnectPacket) (cnn *mqttConn, err error) {
+	persister = persist
+	if persister == nil {
+		panic("persister is nil")
+	}
 	conn, err := client.Dial()
 	if err != nil {
 		return
 	}
-	persister = persist
 	ClientId = string(p.ClientId)
-	handleMessage = handler
+	if listener == nil {
+		listener = mqtt.DefaultListener{}
+	}
 
 	const N = 10
-
 	cnn = &mqttConn{
 		cnn:      conn,
 		readch:   make(chan mqtt.PacketReaded, N),
@@ -61,6 +68,12 @@ func RunMQTT(client connection.Clienter, persist mqtt.Persister, p *packet.Conne
 	if err != nil {
 		return
 	}
+	go func() {
+		if err2 := listener.OnConnected(*p); err2 != nil {
+			time.Sleep(1e6)
+			cnn.closeConn(err2.Error(), false)
+		}
+	}()
 	go readPacket(cnn)
 
 	return
@@ -102,7 +115,7 @@ func handlePacket(p packet.ControlPacketer, c *mqttConn) {
 			}
 			c.session.AddPubIn(pk.PacketId)
 		}
-		handleMessage(*pk)
+		go listener.OnPublishReceived(*pk)
 
 	case packet.TypePUBACK:
 		pk := p.(*packet.PubackPacket)

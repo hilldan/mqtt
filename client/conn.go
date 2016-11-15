@@ -84,6 +84,7 @@ func (c *mqttConn) closeConn(cause string, session bool) {
 	if c.dead {
 		return
 	}
+	go listener.OnDisconnected()
 	c.dead = true
 	c.cnn.Close()
 	close(c.exitch)
@@ -252,6 +253,7 @@ func (c *mqttConn) handleSuback(p *packet.SubackPacket) {
 	if len(subs) != len(p.Code) {
 		return
 	}
+	go listener.OnSubscribeSuccess(subs)
 	tem := make([]packet.TopicFilter, len(subs))
 	n := 0
 	for i := 0; i < len(p.Code); i++ {
@@ -282,6 +284,7 @@ func (c *mqttConn) handleUnsuback(pid uint16) {
 	if !ok {
 		return
 	}
+	go listener.OnUnsubscribeSuccess(unsbs)
 	c.session.Unsubscription(unsbs)
 }
 
