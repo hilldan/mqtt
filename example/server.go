@@ -1,7 +1,9 @@
+// +build ignore
+
 package main
 
 import (
-	"errors"
+	"fmt"
 	"hilldan/db/redis"
 	"hilldan/mqtt"
 	"hilldan/mqtt/connection"
@@ -9,19 +11,22 @@ import (
 	"hilldan/mqtt/server"
 )
 
+type listener struct {
+	mqtt.DefaultListener
+}
+
+func (e listener) OnPublishReceived(p packet.PublishPacket) {
+	fmt.Println("received:", p.PacketId)
+}
+func (e listener) OnSubscribeSuccess(tfs []packet.TopicFilter) {
+	fmt.Println("subscribe:", tfs)
+}
+
 func main() {
 	s := &connection.NormalServer{Addr: "127.0.0.1:2000"}
 	p := mqtt.NewRedisPersist(redis.NewClient("127.0.0.1:6379", "", 0, 10))
 	auth := func(user, passwd string) bool { return true }
-	f := func(p *packet.ConnectPacket) error {
-		pub := packet.PublishPacket{
-			TopicName:          "xx/uu",
-			ApplicationMessage: "xxxxxxxxx",
-		}
-		server.Publish(pub, string(p.ClientId))
-		return errors.New("finish")
-	}
 	server.SetAuthFunc(auth)
-	server.SetDoWhenConnect(f)
+	server.SetEventListener(listener{})
 	server.RunMQTT(s, p)
 }
