@@ -1,7 +1,8 @@
+// +build ignore
+
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"hilldan/db/redis"
@@ -16,6 +17,17 @@ import (
 var (
 	cid = flag.String("cid", "client_*", "client id")
 )
+
+type listener struct {
+	mqtt.DefaultListener
+}
+
+func (e listener) OnPublishReceived(p packet.PublishPacket) {
+	fmt.Println("received:", p.Qos, p.Dup, p.ApplicationMessage)
+}
+func (e listener) OnSubscribeSuccess(tfs []packet.TopicFilter) {
+	fmt.Println("subscribe:", tfs)
+}
 
 func main() {
 	flag.Parse()
@@ -38,10 +50,9 @@ func main() {
 		UserName:     "xxx",
 		Password:     "yyy",
 	}
-	handler := func(p packet.PublishPacket) {
-		fmt.Println(p.Qos, p.Dup, p.ApplicationMessage)
-	}
-	cnn, err := client.RunMQTT(c, persister, cnnPacket, handler)
+
+	client.SetEventListener(listener{})
+	cnn, err := client.RunMQTT(c, persister, cnnPacket)
 	if err != nil {
 		log.Println(err)
 		return
@@ -73,5 +84,4 @@ func main() {
 
 	time.Sleep(30e9)
 
-	var ctx context.Context
 }
