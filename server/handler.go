@@ -10,9 +10,9 @@ import (
 )
 
 var (
-	persister     mqtt.Persister
-	authCheck     func(user, passwd string) bool
-	doWhenConnect func(p *packet.ConnectPacket) error
+	persister mqtt.Persister
+	authCheck func(user, passwd string) bool
+	listener  mqtt.EventListener
 )
 
 // TCP ports 8883 and 1883 are registered with IANA for MQTT TLS and non TLS communication
@@ -30,6 +30,9 @@ func RunMQTT(server connection.Serverer, persist mqtt.Persister) {
 	if persister == nil {
 		panic("persisiter is nil")
 	}
+	if listener == nil {
+		listener = mqtt.DefaultListener{}
+	}
 	RetainRegistry = NewRetainRegistry()
 	server.Run(handler)
 }
@@ -45,10 +48,8 @@ func SetAuthFunc(f func(user, passwd string) bool) {
 	authCheck = f
 }
 
-// SetDoWhenConnect place a callback here that called after the connection establisded.
-// if the result error is not nil, connection will be closed
-func SetDoWhenConnect(f func(p *packet.ConnectPacket) error) {
-	doWhenConnect = f
+func SetEventListener(l mqtt.EventListener) {
+	listener = l
 }
 
 // Publish send pub to the client specified by clientId.
@@ -77,15 +78,12 @@ func handler(cnn net.Conn) {
 		return
 	}
 
-	if doWhenConnect != nil {
-		go func() {
-			err := doWhenConnect(pc)
-			if err != nil {
-				time.Sleep(1e6)
-				c.closeConn(err.Error(), false)
-			}
-		}()
-	}
+	go func() {
+		if err := listener.OnConnected(*pc); err != nil {
+			time.Sleep(1e6)
+			c.closeConn(err.Error(), false)
+		}
+	}()
 	//handle all the packet
 	for pr := range c.readch {
 		if pr.Err != nil {
@@ -148,6 +146,7 @@ func handlePacket(p packet.ControlPacketer, c *mqttConn, pc *packet.ConnectPacke
 			RetainRegistry.Add(string(pk.TopicName), *pk)
 		}
 		ConnRegistry.Publish(*pk, c.clientId)
+		go listener.OnPublishReceived(*pk)
 
 	case packet.TypePUBACK:
 		pk := p.(*packet.PubackPacket)
@@ -170,12 +169,14 @@ func handlePacket(p packet.ControlPacketer, c *mqttConn, pc *packet.ConnectPacke
 	case packet.TypeSUBSCRIBE:
 		pk := p.(*packet.SubscribePacket)
 		c.subscribe(*pk)
+		go listener.OnSubscribeSuccess(pk.TopicFilters)
 
 	// case packet.TypeSUBACK:
 	case packet.TypeUNSUBSCRIBE:
 		pk := p.(*packet.UnsubscribePacket)
 		c.session.Unsubscription(pk.TopicFilter)
 		c.writech <- &packet.UnsubackPacket{PacketId: pk.PacketId}
+		go listener.OnUnsubscribeSuccess(pk.TopicFilter)
 
 	// case packet.TypeUNSUBACK:
 	case packet.TypePINGREQ:
@@ -185,6 +186,7 @@ func handlePacket(p packet.ControlPacketer, c *mqttConn, pc *packet.ConnectPacke
 	case packet.TypeDISCONNECT:
 		pc.WillFlag = false
 		c.closeConn("disconnect", true)
+		go listener.OnDisconnected()
 
 	default:
 		c.closeConn("invalid packet", true)
