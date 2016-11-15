@@ -186,7 +186,6 @@ func handlePacket(p packet.ControlPacketer, c *mqttConn, pc *packet.ConnectPacke
 	case packet.TypeDISCONNECT:
 		pc.WillFlag = false
 		c.closeConn("disconnect", true)
-		go listener.OnDisconnected()
 
 	default:
 		c.closeConn("invalid packet", true)

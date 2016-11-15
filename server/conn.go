@@ -87,6 +87,7 @@ func (c *mqttConn) closeConn(cause string, session bool) {
 	if c.dead {
 		return
 	}
+	go listener.OnDisconnected()
 	c.dead = true
 	c.cnn.Close()
 	close(c.exitch)
